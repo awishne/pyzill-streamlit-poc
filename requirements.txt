@@ -2,3 +2,4 @@ streamlit
 homeharvest
 pandas
 requests
+beautifulsoup4
