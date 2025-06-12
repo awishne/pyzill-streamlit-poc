@@ -3,129 +3,126 @@ from homeharvest import scrape_property
 import pandas as pd
 import requests
 import math
+import urllib.parse
 
-# Haversine formula to compute distance in miles
+# Haversine formula for distance in miles
 def haversine(lat1, lon1, lat2, lon2):
-    R = 3958.8  # Earth radius in miles
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi/2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda/2)**2
+    R = 3958.8
+    φ1, φ2 = math.radians(lat1), math.radians(lat2)
+    Δφ = math.radians(lat2 - lat1)
+    Δλ = math.radians(lon2 - lon1)
+    a = math.sin(Δφ/2)**2 + math.cos(φ1) * math.cos(φ2) * math.sin(Δλ/2)**2
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-st.set_page_config(page_title="HomeHarvest Rentals — POC", layout="wide")
-st.title("🏠 HomeHarvest Rental Listings")
+st.set_page_config(page_title="Rental Finder POC", layout="wide")
+st.title("🏠 Active Rental Listings — POC")
 
-# Sidebar filters
-st.sidebar.header("Search Rentals (Active Only)")
-location   = st.sidebar.text_input("Location (address / city / ZIP)", "60614")
-min_beds   = st.sidebar.number_input("Min Beds", min_value=0, max_value=10, value=0)
-min_baths  = st.sidebar.number_input("Min Baths", min_value=0, max_value=10, value=0)
-property_types = st.sidebar.multiselect(
-    "Property Type (optional)",
-    options=["single_family","multi_family","condos","condo_townhome",
-             "townhomes","duplex_triplex","farm","land","mobile"],
-    help="Select one or more types"
-)
-radius     = st.sidebar.number_input("Radius (miles)", 0.0, 100.0, 10.0, step=1.0)
-past_days  = st.sidebar.number_input("Listed in last (days)", 1, 365, 30)
-limit      = st.sidebar.number_input("Max Results", 1, 1000, 100, step=50)
-extra_data = st.sidebar.checkbox("Include Extra Data (e.g. schools)", value=False)
+# Sidebar inputs
+with st.sidebar:
+    st.header("Search Parameters")
+    location  = st.text_input("Location (address / city / ZIP)", "60614")
+    min_beds  = st.number_input("Min Beds",  min_value=0, max_value=10, value=0)
+    min_baths = st.number_input("Min Baths", min_value=0, max_value=10, value=0)
+    radius    = st.number_input("Radius (miles)", 0.0, 100.0, 10.0, step=1.0)
+    past_days = st.number_input("Listed in last (days)", 1, 365, 30)
+    limit     = st.number_input("Max Results", 1, 1000, 100, step=50)
+    extra     = st.checkbox("Include Extra Data (e.g. schools)", value=False)
+    go        = st.button("Search Rentals")
 
-if st.sidebar.button("Search Rentals"):
+if go:
     # 1) Geocode via Census API
-    with st.spinner("Geocoding location…"):
+    with st.spinner("Geocoding your location…"):
         try:
             resp = requests.get(
                 "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress",
-                params={"address": location,
-                        "benchmark": "Public_AR_Census2020",
-                        "format": "json"},
+                params={
+                    "address": location,
+                    "benchmark": "Public_AR_Census2020",
+                    "format": "json"
+                },
                 timeout=5
             ).json()
             matches = resp.get("result", {}).get("addressMatches", [])
             if matches:
-                coord = matches[0]["coordinates"]
-                center_lat, center_lon = coord["y"], coord["x"]
+                center = matches[0]["coordinates"]
+                center_lat, center_lon = center["y"], center["x"]
             else:
                 center_lat = center_lon = None
-        except Exception:
+        except:
             center_lat = center_lon = None
 
-    # 2) Fetch rental listings
+    # 2) Fetch rentals
     with st.spinner("Fetching rental listings…"):
         try:
             props = scrape_property(
                 location=location,
-                listing_type="for_rent",               # rentals only
-                property_type=property_types or None,
+                listing_type="for_rent",
                 past_days=past_days,
                 limit=limit,
                 proxy=None,
-                extra_property_data=extra_data
+                extra_property_data=extra
             )
             df = pd.DataFrame(props)
         except Exception as e:
-            st.error(f"Error fetching data: {e}")
+            st.error(f"Failed to fetch data: {e}")
             df = pd.DataFrame()
 
     if df.empty:
-        st.warning("No rentals found. Try adjusting filters or expanding radius.")
+        st.warning("No rentals found. Try widening your radius or loosening filters.")
     else:
-        # 3) Clean & cast numeric columns
-        df['beds'] = pd.to_numeric(df['beds'], errors='coerce').fillna(0).astype(int)
-        df['full_baths'] = pd.to_numeric(df['full_baths'], errors='coerce').fillna(0)
-        df['half_baths'] = pd.to_numeric(df['half_baths'], errors='coerce').fillna(0)
-        df['baths'] = df['full_baths'] + df['half_baths']
+        # 3) Clean numeric fields
+        df["beds"]       = pd.to_numeric(df["beds"],       errors="coerce").fillna(0).astype(int)
+        df["full_baths"] = pd.to_numeric(df["full_baths"], errors="coerce").fillna(0)
+        df["half_baths"] = pd.to_numeric(df["half_baths"], errors="coerce").fillna(0)
+        df["baths"]      = df["full_baths"] + df["half_baths"]
 
-        # 4) Filter by min beds/baths
-        df = df[df['beds']  >= min_beds]
-        df = df[df['baths'] >= min_baths]
+        # 4) Filter by beds/baths
+        df = df[df["beds"]  >= min_beds]
+        df = df[df["baths"] >= min_baths]
 
-        # 5) Filter by radius (if geocoded and lat/lon exist)
-        if center_lat is not None and 'latitude' in df and 'longitude' in df:
-            df['distance'] = df.apply(
-                lambda r: haversine(center_lat, center_lon,
-                                    r['latitude'], r['longitude']),
+        # 5) Filter by radius
+        if center_lat and "latitude" in df and "longitude" in df:
+            df["distance"] = df.apply(
+                lambda r: haversine(center_lat, center_lon, r["latitude"], r["longitude"]),
                 axis=1
             )
-            df = df[df['distance'] <= radius]
+            df = df[df["distance"] <= radius]
 
-        # 6) Display as a nice list of cards
+        # 6) Display as cards
         st.markdown(f"### {len(df)} Rentals Found")
-        for i, row in df.iterrows():
-            # Build display values
-            addr = row.get('street', '')
-            unit = row.get('unit')
-            city = row.get('city', '')
-            zipc = row.get('zip_code', '')
-            link = row.get('property_url')
-            title = f"{addr}{(' ' + unit) if unit else ''}, {city} {zipc}"
+        for idx, row in df.iterrows():
+            # Title link
+            addr = row.get("street", "")
+            unit = row.get("unit") or ""
+            city = row.get("city", "")
+            zipc = row.get("zip_code", "")
+            url  = row.get("property_url")
+            title = f"{addr} {unit}, {city} {zipc}".strip()
+            st.markdown(f"#### [{title}]({url})", unsafe_allow_html=True)
 
-            st.markdown(f"#### [{title}]({link})")
-            cols = st.columns(4)
-            cols[0].write(f"**Price:** {row.get('list_price','N/A')}")
-            cols[1].write(f"**Beds:** {row['beds']}")
-            cols[2].write(f"**Baths:** {int(row['baths'])}")
-            cols[3].write(f"**Sqft:** {row.get('sqft','N/A')}")
+            # Summary stats
+            c1, c2, c3, c4 = st.columns(4)
+            c1.write(f"💰 **Price:** {row.get('list_price','N/A')}")
+            c2.write(f"🛏️ **Beds:** {row['beds']}")
+            c3.write(f"🛁 **Baths:** {int(row['baths'])}")
+            c4.write(f"📐 **Sqft:** {row.get('sqft','N/A')}")
 
-            ag_col, of_col = st.columns(2)
-            ag_col.write(f"**Agent:** {row.get('agent_name','N/A')}")
-            ag_col.write(f"**Email:** {row.get('agent_email','N/A')}")
-            of_col.write(f"**Office:** {row.get('office_name','N/A')}")
-            of_col.write(f"**Office Email:** {row.get('office_email','N/A')}")
-
-            # Email template button
-            if st.button(f"Generate Email to {row.get('agent_name','Agent')}", key=f"email_{i}"):
-                template = (
-                    f"Subject: Inquiry: {row['beds']}-bed rental at {addr}, {city}\n\n"
-                    f"Hi {row.get('agent_name','')},\n\n"
-                    f"I’m reaching out from [Your Company]. I saw your listing at {addr}, {city} "
-                    f"for ${row.get('list_price','')} per month. Would you consider a short-term "
-                    f"(1–3 month) lease?\n\n"
-                    f"Please let me know if that’s possible.\n\n"
-                    f"Thank you,\n[Your Name]"
+            # Agent info
+            a1, a2 = st.columns(2)
+            agent = row.get("agent_name","N/A")
+            email = row.get("agent_email","")
+            office = row.get("office_name","N/A")
+            off_email = row.get("office_email","")
+            a1.write(f"👤 **Agent:** {agent}")
+            if email:
+                mailto = (
+                    f"mailto:{email}"
+                    f"?subject={urllib.parse.quote(f'Inquiry: {row['beds']}-bed rental at {addr}')}"
+                    f"&body={urllib.parse.quote('Hi ' + agent + ',\n\nI saw your rental at ' + title + ' for ' + str(row.get('list_price','')) + '. Would you consider a 1–3 month lease?\n\nThanks,\n[Your Name]')}"
                 )
-                st.text_area("Email Template", template, height=180)
+                a1.markdown(f"[✉️ Email Agent]({mailto})")
+            a2.write(f"🏢 **Office:** {office}")
+            if off_email:
+                a2.markdown(f"[✉️ Email Office]({urllib.parse.quote(off_email)})")
 
             st.markdown("---")
