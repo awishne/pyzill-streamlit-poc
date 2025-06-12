@@ -16,50 +16,48 @@ def haversine(lat1, lon1, lat2, lon2):
 st.set_page_config(page_title="HomeHarvest Rentals — POC", layout="wide")
 st.title("🏠 HomeHarvest Rental Listings")
 
-# Sidebar: filters
+# Sidebar filters
 st.sidebar.header("Search Rentals (Active Only)")
-location = st.sidebar.text_input("Location (address / city / ZIP)", "60614")
-min_beds = st.sidebar.number_input("Min Beds", min_value=0, max_value=10, value=0)
-min_baths = st.sidebar.number_input("Min Baths", min_value=0, max_value=10, value=0)
+location   = st.sidebar.text_input("Location (address / city / ZIP)", "60614")
+min_beds   = st.sidebar.number_input("Min Beds", min_value=0, max_value=10, value=0)
+min_baths  = st.sidebar.number_input("Min Baths", min_value=0, max_value=10, value=0)
 property_types = st.sidebar.multiselect(
     "Property Type (optional)",
     options=["single_family","multi_family","condos","condo_townhome",
              "townhomes","duplex_triplex","farm","land","mobile"],
     help="Select one or more types"
 )
-radius = st.sidebar.number_input(
-    "Radius (miles)", min_value=0.0, max_value=100.0,
-    value=10.0, step=1.0,
-    help="Filter by distance from center location"
-)
-past_days = st.sidebar.number_input("Listed in last (days)", min_value=1, max_value=365, value=30)
-limit = st.sidebar.number_input("Max Results", min_value=1, max_value=1000, value=100, step=50)
+radius     = st.sidebar.number_input("Radius (miles)", 0.0, 100.0, 10.0, step=1.0)
+past_days  = st.sidebar.number_input("Listed in last (days)", 1, 365, 30)
+limit      = st.sidebar.number_input("Max Results", 1, 1000, 100, step=50)
 extra_data = st.sidebar.checkbox("Include Extra Data (e.g. schools)", value=False)
 
 if st.sidebar.button("Search Rentals"):
-    # 1) Geocode center via Census API
+    # 1) Geocode via Census API
     with st.spinner("Geocoding location…"):
         try:
             resp = requests.get(
                 "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress",
-                params={"address": location, "benchmark": "Public_AR_Census2020", "format": "json"},
+                params={"address": location,
+                        "benchmark": "Public_AR_Census2020",
+                        "format": "json"},
                 timeout=5
-            )
-            matches = resp.json().get("result", {}).get("addressMatches", [])
+            ).json()
+            matches = resp.get("result", {}).get("addressMatches", [])
             if matches:
-                center = matches[0]["coordinates"]
-                center_lat, center_lon = center["y"], center["x"]
+                coord = matches[0]["coordinates"]
+                center_lat, center_lon = coord["y"], coord["x"]
             else:
                 center_lat = center_lon = None
         except Exception:
             center_lat = center_lon = None
 
-    # 2) Fetch listings (rentals only)
+    # 2) Fetch rental listings
     with st.spinner("Fetching rental listings…"):
         try:
             props = scrape_property(
                 location=location,
-                listing_type="for_rent",
+                listing_type="for_rent",               # rentals only
                 property_type=property_types or None,
                 past_days=past_days,
                 limit=limit,
@@ -72,52 +70,59 @@ if st.sidebar.button("Search Rentals"):
             df = pd.DataFrame()
 
     if df.empty:
-        st.warning("No rentals found. Try adjusting filters or expand radius.")
+        st.warning("No rentals found. Try adjusting filters or expanding radius.")
     else:
-        # 3) Filter by beds/baths
-        df = df[df["beds"] >= min_beds]
-        df = df[df["full_baths"].fillna(0) + df["half_baths"].fillna(0) >= min_baths]
+        # 3) Clean & cast numeric columns
+        df['beds'] = pd.to_numeric(df['beds'], errors='coerce').fillna(0).astype(int)
+        df['full_baths'] = pd.to_numeric(df['full_baths'], errors='coerce').fillna(0)
+        df['half_baths'] = pd.to_numeric(df['half_baths'], errors='coerce').fillna(0)
+        df['baths'] = df['full_baths'] + df['half_baths']
 
-        # 4) Filter by radius if geocoded
-        if center_lat is not None and "latitude" in df and "longitude" in df:
-            df["distance"] = df.apply(
-                lambda r: haversine(center_lat, center_lon, r["latitude"], r["longitude"]), axis=1
+        # 4) Filter by min beds/baths
+        df = df[df['beds']  >= min_beds]
+        df = df[df['baths'] >= min_baths]
+
+        # 5) Filter by radius (if geocoded and lat/lon exist)
+        if center_lat is not None and 'latitude' in df and 'longitude' in df:
+            df['distance'] = df.apply(
+                lambda r: haversine(center_lat, center_lon,
+                                    r['latitude'], r['longitude']),
+                axis=1
             )
-            df = df[df["distance"] <= radius]
+            df = df[df['distance'] <= radius]
 
-        # 5) Render listings as cards
-        st.markdown(f"### {len(df)} Rentals Found — Displaying as list")
+        # 6) Display as a nice list of cards
+        st.markdown(f"### {len(df)} Rentals Found")
         for i, row in df.iterrows():
-            addr = row.get("street", "")
-            unit = row.get("unit")
-            city = row.get("city", "")
-            state = row.get("state", "")
-            zipc = row.get("zip_code", "")
-            link = row.get("property_url")
-            st.markdown(f"#### [{addr + (' ' + unit if unit else '')}, {city} {zipc}]({link})")
+            # Build display values
+            addr = row.get('street', '')
+            unit = row.get('unit')
+            city = row.get('city', '')
+            zipc = row.get('zip_code', '')
+            link = row.get('property_url')
+            title = f"{addr}{(' ' + unit) if unit else ''}, {city} {zipc}"
 
+            st.markdown(f"#### [{title}]({link})")
             cols = st.columns(4)
-            cols[0].write(f"**Price:** {row.get('list_price', 'N/A')}")
-            cols[1].write(f"**Beds:** {int(row.get('beds',0))}")
-            total_baths = int(row.get('full_baths',0) + row.get('half_baths',0))
-            cols[2].write(f"**Baths:** {total_baths}")
-            cols[3].write(f"**Sqft:** {row.get('sqft', 'N/A')}")
+            cols[0].write(f"**Price:** {row.get('list_price','N/A')}")
+            cols[1].write(f"**Beds:** {row['beds']}")
+            cols[2].write(f"**Baths:** {int(row['baths'])}")
+            cols[3].write(f"**Sqft:** {row.get('sqft','N/A')}")
 
             ag_col, of_col = st.columns(2)
             ag_col.write(f"**Agent:** {row.get('agent_name','N/A')}")
-            ag_email = row.get('agent_email') or "N/A"
-            ag_col.write(f"**Email:** {ag_email}")
+            ag_col.write(f"**Email:** {row.get('agent_email','N/A')}")
             of_col.write(f"**Office:** {row.get('office_name','N/A')}")
             of_col.write(f"**Office Email:** {row.get('office_email','N/A')}")
 
-            # Email template generator
-            btn_key = f"email_{i}"
-            if st.button(f"Generate Email to {row.get('agent_name','Agent')}", key=btn_key):
+            # Email template button
+            if st.button(f"Generate Email to {row.get('agent_name','Agent')}", key=f"email_{i}"):
                 template = (
-                    f"Subject: Inquiry: {int(row.get('beds',0))}-bedroom rental at {addr}, {city}\n\n"
+                    f"Subject: Inquiry: {row['beds']}-bed rental at {addr}, {city}\n\n"
                     f"Hi {row.get('agent_name','')},\n\n"
-                    f"I’m reaching out from [Your Company]. I saw your listing at {addr}, {city} for "
-                    f"${row.get('list_price','')}. Would you consider a short-term (e.g., 1–3 month) lease?\n\n"
+                    f"I’m reaching out from [Your Company]. I saw your listing at {addr}, {city} "
+                    f"for ${row.get('list_price','')} per month. Would you consider a short-term "
+                    f"(1–3 month) lease?\n\n"
                     f"Please let me know if that’s possible.\n\n"
                     f"Thank you,\n[Your Name]"
                 )
