@@ -4,8 +4,9 @@ import pandas as pd
 import requests
 import math
 import urllib.parse
+from bs4 import BeautifulSoup
 
-# Haversine formula (if you still want to compute distance client-side)
+# Haversine formula to compute distance in miles
 def haversine(lat1, lon1, lat2, lon2):
     R = 3958.8
     φ1, φ2 = math.radians(lat1), math.radians(lat2)
@@ -13,6 +14,16 @@ def haversine(lat1, lon1, lat2, lon2):
     Δλ = math.radians(lon2 - lon1)
     a = math.sin(Δφ/2)**2 + math.cos(φ1)*math.cos(φ2)*math.sin(Δλ/2)**2
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+# Fetch the page's <meta property="og:image"> thumbnail
+def fetch_thumbnail(url):
+    try:
+        resp = requests.get(url, timeout=5)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        meta = soup.find("meta", property="og:image")
+        return meta["content"] if meta and meta.get("content") else None
+    except:
+        return None
 
 st.set_page_config(page_title="Rental Finder POC", layout="wide")
 st.title("🏠 Active Rental Listings — POC")
@@ -30,17 +41,17 @@ with st.sidebar:
     go        = st.button("Search Rentals")
 
 if go:
-    # 1) Geocode center via Census API (for display/optional filtering)
+    # 1) Geocode center via Census API
     with st.spinner("Geocoding location…"):
         try:
-            resp = requests.get(
+            geo = requests.get(
                 "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress",
                 params={"address": location,
                         "benchmark": "Public_AR_Census2020",
                         "format": "json"},
                 timeout=5
             ).json()
-            matches = resp.get("result", {}).get("addressMatches", [])
+            matches = geo.get("result", {}).get("addressMatches", [])
             if matches:
                 c = matches[0]["coordinates"]
                 center_lat, center_lon = c["y"], c["x"]
@@ -49,13 +60,13 @@ if go:
         except:
             center_lat = center_lon = None
 
-    # 2) Fetch only rentals within given radius
+    # 2) Fetch rentals (HomeHarvest will apply radius filter server-side)
     with st.spinner("Fetching rental listings…"):
         try:
             props = scrape_property(
                 location=location,
                 listing_type="for_rent",
-                radius=radius,                     # <-- pass radius here
+                radius=radius,
                 past_days=past_days,
                 limit=limit,
                 proxy=None,
@@ -69,26 +80,38 @@ if go:
     if df.empty:
         st.warning("No rentals found. Try widening radius or loosening filters.")
     else:
-        # 3) Clean numeric fields
+        # 3) Clean & cast numeric fields
         df["beds"]       = pd.to_numeric(df["beds"],       errors="coerce").fillna(0).astype(int)
         df["full_baths"] = pd.to_numeric(df["full_baths"], errors="coerce").fillna(0)
         df["half_baths"] = pd.to_numeric(df["half_baths"], errors="coerce").fillna(0)
         df["baths"]      = df["full_baths"] + df["half_baths"]
 
-        # 4) Filter by beds/baths
+        # 4) Filter by min beds/baths
         df = df[df["beds"]  >= min_beds]
         df = df[df["baths"] >= min_baths]
 
-        # 5) Display as cards
-        st.markdown(f"### {len(df)} Rentals Found within {radius} miles")
+        # 5) Compute & sort by distance client-side (for display order)
+        if center_lat is not None and "latitude" in df and "longitude" in df:
+            df["distance"] = df.apply(
+                lambda r: haversine(center_lat, center_lon, r["latitude"], r["longitude"]), axis=1
+            )
+            df = df.sort_values("distance", ascending=True)
+
+        st.markdown(f"### {len(df)} Rentals Found Within {radius} Miles")
+
+        # 6) Enrich and display cards
         for idx, row in df.iterrows():
-            addr     = row.get("street","")
-            unit_raw = row.get("unit")
-            unit     = unit_raw if pd.notna(unit_raw) else ""
-            city     = row.get("city","")
-            zipc     = row.get("zip_code","")
-            title    = f"{addr} {unit}, {city} {zipc}".strip()
-            url      = row.get("property_url","#")
+            addr = row.get("street", "")
+            unit = row.get("unit") if pd.notna(row.get("unit")) else ""
+            city = row.get("city", "")
+            zipc = row.get("zip_code", "")
+            title = f"{addr} {unit}, {city} {zipc}".strip()
+            url   = row.get("property_url", "#")
+
+            # thumbnail
+            thumb = fetch_thumbnail(url)
+            if thumb:
+                st.image(thumb, width=200)
 
             st.markdown(f"#### [{title}]({url})", unsafe_allow_html=True)
 
@@ -100,10 +123,11 @@ if go:
 
             a1, a2 = st.columns(2)
             agent    = row.get("agent_name","N/A")
-            email    = row.get("agent_email", "")
+            email    = row.get("agent_email","")
             office   = row.get("office_name","N/A")
             off_email= row.get("office_email","")
 
+            # Email Agent button (mailto)
             a1.write(f"👤 **Agent:** {agent}")
             if isinstance(email, str) and email.strip():
                 subject = f"Inquiry: {row['beds']}-bed rental at {title}"
