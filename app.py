@@ -5,13 +5,13 @@ import requests
 import math
 import urllib.parse
 
-# Haversine formula for distance in miles
+# Haversine formula (if you still want to compute distance client-side)
 def haversine(lat1, lon1, lat2, lon2):
     R = 3958.8
     φ1, φ2 = math.radians(lat1), math.radians(lat2)
     Δφ = math.radians(lat2 - lat1)
     Δλ = math.radians(lon2 - lon1)
-    a = math.sin(Δφ/2)**2 + math.cos(φ1) * math.cos(φ2) * math.sin(Δλ/2)**2
+    a = math.sin(Δφ/2)**2 + math.cos(φ1)*math.cos(φ2)*math.sin(Δλ/2)**2
     return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 st.set_page_config(page_title="Rental Finder POC", layout="wide")
@@ -30,16 +30,14 @@ with st.sidebar:
     go        = st.button("Search Rentals")
 
 if go:
-    # 1) Geocode via Census API
+    # 1) Geocode center via Census API (for display/optional filtering)
     with st.spinner("Geocoding location…"):
         try:
             resp = requests.get(
                 "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress",
-                params={
-                    "address": location,
-                    "benchmark": "Public_AR_Census2020",
-                    "format": "json"
-                },
+                params={"address": location,
+                        "benchmark": "Public_AR_Census2020",
+                        "format": "json"},
                 timeout=5
             ).json()
             matches = resp.get("result", {}).get("addressMatches", [])
@@ -51,12 +49,13 @@ if go:
         except:
             center_lat = center_lon = None
 
-    # 2) Fetch rentals
+    # 2) Fetch only rentals within given radius
     with st.spinner("Fetching rental listings…"):
         try:
             props = scrape_property(
                 location=location,
                 listing_type="for_rent",
+                radius=radius,                     # <-- pass radius here
                 past_days=past_days,
                 limit=limit,
                 proxy=None,
@@ -68,7 +67,7 @@ if go:
             df = pd.DataFrame()
 
     if df.empty:
-        st.warning("No rentals found. Try widening your radius or loosening filters.")
+        st.warning("No rentals found. Try widening radius or loosening filters.")
     else:
         # 3) Clean numeric fields
         df["beds"]       = pd.to_numeric(df["beds"],       errors="coerce").fillna(0).astype(int)
@@ -80,26 +79,18 @@ if go:
         df = df[df["beds"]  >= min_beds]
         df = df[df["baths"] >= min_baths]
 
-        # 5) Filter by radius (if geocoded and coords exist)
-        if center_lat is not None and "latitude" in df and "longitude" in df:
-            df["distance"] = df.apply(
-                lambda r: haversine(center_lat, center_lon, r["latitude"], r["longitude"]),
-                axis=1
-            )
-            df = df[df["distance"] <= radius]
-
-        # 6) Display as cards
-        st.markdown(f"### {len(df)} Rentals Found")
+        # 5) Display as cards
+        st.markdown(f"### {len(df)} Rentals Found within {radius} miles")
         for idx, row in df.iterrows():
-            addr = row.get("street", "")
-            raw_unit = row.get("unit")
-            unit = raw_unit if pd.notna(raw_unit) else ""
-            city = row.get("city", "")
-            zipc = row.get("zip_code", "")
-            title = f"{addr} {unit}, {city} {zipc}".strip()
-            url = row.get("property_url", "#")
+            addr     = row.get("street","")
+            unit_raw = row.get("unit")
+            unit     = unit_raw if pd.notna(unit_raw) else ""
+            city     = row.get("city","")
+            zipc     = row.get("zip_code","")
+            title    = f"{addr} {unit}, {city} {zipc}".strip()
+            url      = row.get("property_url","#")
 
-            st.markdown(f"#### [{title}]({url})")
+            st.markdown(f"#### [{title}]({url})", unsafe_allow_html=True)
 
             c1, c2, c3, c4 = st.columns(4)
             c1.write(f"💰 **Price:** {row.get('list_price','N/A')}")
@@ -108,15 +99,15 @@ if go:
             c4.write(f"📐 **Sqft:** {row.get('sqft','N/A')}")
 
             a1, a2 = st.columns(2)
-            agent = row.get("agent_name","N/A")
-            email = row.get("agent_email","")
-            office = row.get("office_name","N/A")
-            off_email = row.get("office_email","")
+            agent    = row.get("agent_name","N/A")
+            email    = row.get("agent_email", "")
+            office   = row.get("office_name","N/A")
+            off_email= row.get("office_email","")
 
             a1.write(f"👤 **Agent:** {agent}")
-            if email:
+            if isinstance(email, str) and email.strip():
                 subject = f"Inquiry: {row['beds']}-bed rental at {title}"
-                body = (
+                body    = (
                     f"Hi {agent},\n\n"
                     f"I saw your listing at {title} for ${row.get('list_price','')} per month. "
                     f"Would you consider a 1–3 month lease?\n\nThanks,\n[Your Name]"
@@ -129,8 +120,7 @@ if go:
                 a1.markdown(f"[✉️ Email Agent]({mailto})")
 
             a2.write(f"🏢 **Office:** {office}")
-            if off_email:
-                off_mailto = f"mailto:{off_email}"
-                a2.markdown(f"[✉️ Email Office]({off_mailto})")
+            if isinstance(off_email, str) and off_email.strip():
+                a2.markdown(f"[✉️ Email Office](mailto:{off_email})")
 
             st.markdown("---")
