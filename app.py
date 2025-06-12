@@ -14,17 +14,24 @@ if st.button("Search"):
     with st.spinner("Fetching listings…"):
         # Call pyzill without proxies for light use
         results = pyzill.for_rent(
-            1,
-            search_value=loc,
-            min_beds=beds or None,
-            min_bathrooms=baths or None,
-            max_beds=None,
-            max_bathrooms=None,
-            ne_lat=None, ne_long=None,
-            sw_lat=None, sw_long=None,
-            zoom_value=12,
-            proxy_url=None
-        )
+    1,
+    search_value=loc or None,
+    is_entire_place=True,    # always whole unit
+    is_room=False,           # never just a room
+    min_beds=beds or None,
+    max_beds=None,
+    min_bathrooms=baths or None,
+    max_bathrooms=None,
+    min_price=None,          # default to no lower bound
+    max_price=None,          # default to no upper bound
+    ne_lat=None,
+    ne_long=None,
+    sw_lat=None,
+    sw_long=None,
+    zoom_value=12,
+    proxy_url=None
+)
+
     if not results:
         st.warning("No results returned—try a different location or fewer filters.")
     else:
