@@ -31,7 +31,7 @@ with st.sidebar:
 
 if go:
     # 1) Geocode via Census API
-    with st.spinner("Geocoding your location…"):
+    with st.spinner("Geocoding location…"):
         try:
             resp = requests.get(
                 "https://geocoding.geo.census.gov/geocoder/locations/onelineaddress",
@@ -44,8 +44,8 @@ if go:
             ).json()
             matches = resp.get("result", {}).get("addressMatches", [])
             if matches:
-                center = matches[0]["coordinates"]
-                center_lat, center_lon = center["y"], center["x"]
+                c = matches[0]["coordinates"]
+                center_lat, center_lon = c["y"], c["x"]
             else:
                 center_lat = center_lon = None
         except:
@@ -80,8 +80,8 @@ if go:
         df = df[df["beds"]  >= min_beds]
         df = df[df["baths"] >= min_baths]
 
-        # 5) Filter by radius
-        if center_lat and "latitude" in df and "longitude" in df:
+        # 5) Filter by radius (if geocoded and coords exist)
+        if center_lat is not None and "latitude" in df and "longitude" in df:
             df["distance"] = df.apply(
                 lambda r: haversine(center_lat, center_lon, r["latitude"], r["longitude"]),
                 axis=1
@@ -91,38 +91,46 @@ if go:
         # 6) Display as cards
         st.markdown(f"### {len(df)} Rentals Found")
         for idx, row in df.iterrows():
-            # Title link
             addr = row.get("street", "")
-            unit = row.get("unit") or ""
+            raw_unit = row.get("unit")
+            unit = raw_unit if pd.notna(raw_unit) else ""
             city = row.get("city", "")
             zipc = row.get("zip_code", "")
-            url  = row.get("property_url")
             title = f"{addr} {unit}, {city} {zipc}".strip()
-            st.markdown(f"#### [{title}]({url})", unsafe_allow_html=True)
+            url = row.get("property_url", "#")
 
-            # Summary stats
+            st.markdown(f"#### [{title}]({url})")
+
             c1, c2, c3, c4 = st.columns(4)
             c1.write(f"💰 **Price:** {row.get('list_price','N/A')}")
             c2.write(f"🛏️ **Beds:** {row['beds']}")
             c3.write(f"🛁 **Baths:** {int(row['baths'])}")
             c4.write(f"📐 **Sqft:** {row.get('sqft','N/A')}")
 
-            # Agent info
             a1, a2 = st.columns(2)
             agent = row.get("agent_name","N/A")
             email = row.get("agent_email","")
             office = row.get("office_name","N/A")
             off_email = row.get("office_email","")
+
             a1.write(f"👤 **Agent:** {agent}")
             if email:
+                subject = f"Inquiry: {row['beds']}-bed rental at {title}"
+                body = (
+                    f"Hi {agent},\n\n"
+                    f"I saw your listing at {title} for ${row.get('list_price','')} per month. "
+                    f"Would you consider a 1–3 month lease?\n\nThanks,\n[Your Name]"
+                )
                 mailto = (
                     f"mailto:{email}"
-                    f"?subject={urllib.parse.quote(f'Inquiry: {row['beds']}-bed rental at {addr}')}"
-                    f"&body={urllib.parse.quote('Hi ' + agent + ',\n\nI saw your rental at ' + title + ' for ' + str(row.get('list_price','')) + '. Would you consider a 1–3 month lease?\n\nThanks,\n[Your Name]')}"
+                    f"?subject={urllib.parse.quote(subject)}"
+                    f"&body={urllib.parse.quote(body)}"
                 )
                 a1.markdown(f"[✉️ Email Agent]({mailto})")
+
             a2.write(f"🏢 **Office:** {office}")
             if off_email:
-                a2.markdown(f"[✉️ Email Office]({urllib.parse.quote(off_email)})")
+                off_mailto = f"mailto:{off_email}"
+                a2.markdown(f"[✉️ Email Office]({off_mailto})")
 
             st.markdown("---")
